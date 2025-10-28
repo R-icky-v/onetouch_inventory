@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///C:/Reprint%20Academy/Pagina%20Web/pages/index.js"],"sourcesContent":["// Ubicación CORRECTA:\r\n// -> Pages Router: /pages/index.js\r\n// -> App Router: /app/page.js\r\n\r\n// Componente funcional con export default\r\nexport default function HomePage() {\r\n  return (\r\n    <div className=\"bg-white p-8\">\r\n      <h1 className=\"text-3xl font-bold text-blue-600\">\r\n        ¡Hola Mundo Next.js 16!\r\n      </h1>\r\n    </div>\r\n  );\r\n}\r\n"],"names":[],"mappings":"AAAA,sBAAsB;AACtB,mCAAmC;AACnC,8BAA8B;AAE9B,0CAA0C;;;;;;;AAC3B,SAAS;IACtB,qBACE,qKAAC;QAAI,WAAU;kBACb,cAAA,qKAAC;YAAG,WAAU;sBAAmC;;;;;;;;;;;AAKvD","debugId":null}}]
+}

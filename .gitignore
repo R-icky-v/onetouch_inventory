@@ -1,0 +1,32 @@
+# Variables de entorno (MUY IMPORTANTE)
+.env
+.env.local
+.env.production
+backend/.env
+
+# Node modules
+node_modules/
+backend/node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Base de datos local
+*.sqlite
+*.db
+
+# Archivos temporales
+*.tmp
+temp/
