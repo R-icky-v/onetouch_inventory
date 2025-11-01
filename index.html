@@ -2310,14 +2310,21 @@
               method: "DELETE",
             });
 
-            if (!response.ok) throw new Error("Error al eliminar producto");
+            const data = await response.json();
 
-            showAlert('🗑️ Producto "' + productName + '" eliminado', "warning");
+            if (!response.ok) {
+              throw new Error(data.error || "Error al eliminar producto");
+            }
+
+            showAlert(
+              '🗑️ Producto "' + productName + '" eliminado exitosamente',
+              "warning"
+            );
             await loadData();
             hideLoadingIndicator();
           } catch (error) {
-            console.error("Error:", error);
-            showAlert("❌ Error: " + error.message, "danger");
+            console.error("Error al eliminar:", error);
+            showAlert("❌ " + error.message, "danger");
             hideLoadingIndicator();
           }
         }

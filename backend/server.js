@@ -1,28 +1,34 @@
+// ====================================
+// CARGAR VARIABLES DE ENTORNO
+// ====================================
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 
 // ====================================
-// CONFIGURACIÓN DE POSTGRESQL
+// CONFIGURACIÓN DE POSTGRESQL (SEGURA)
 // ====================================
 const pool = new Pool({
-  user: 'postgres',           // Usuario por defecto
-  password: 'mifamilia12345',       // LA CONTRASEÑA QUE PUSISTE AL INSTALAR
-  host: 'localhost',
-  port: 5432,
-  database: 'onetouch_inventory'
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  database: process.env.DB_NAME
 });
 
 console.log('🔧 Configuración de PostgreSQL:');
-console.log('   Host: localhost:5432');
-console.log('   Database: onetouch_inventory');
-console.log('   User: postgres\n');
+console.log(`   Host: ${process.env.DB_HOST}:${process.env.DB_PORT}`);
+console.log(`   Database: ${process.env.DB_NAME}`);
+console.log(`   User: ${process.env.DB_USER}`);
+console.log('   🔒 Contraseña: [PROTEGIDA]\n');
 
 // Verificar conexión
 pool.connect((err, client, release) => {
@@ -30,8 +36,8 @@ pool.connect((err, client, release) => {
     console.error('❌ Error al conectar a PostgreSQL:', err.message);
     console.error('\n🔍 VERIFICA:');
     console.error('   1. PostgreSQL está corriendo');
-    console.error('   2. La contraseña es correcta');
-    console.error('   3. El puerto 5432 está disponible\n');
+    console.error('   2. Las variables de entorno en .env son correctas');
+    console.error('   3. El puerto está disponible\n');
     process.exit(1);
   }
   release();
@@ -45,10 +51,7 @@ pool.connect((err, client, release) => {
 async function createTables() {
   const client = await pool.connect();
   try {
-    console.log('📋 Creando base de datos y tablas...\n');
-
-    // Crear base de datos si no existe (esto se hace manualmente en pgAdmin)
-    // La base de datos debe crearse antes desde pgAdmin
+    console.log('📋 Creando tablas...\n');
 
     // Tabla Productos
     await client.query(`
@@ -113,7 +116,6 @@ async function createTables() {
 // RUTAS API - PRODUCTOS
 // ====================================
 
-// Obtener todos los productos
 app.get('/api/products', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM productos ORDER BY created_at DESC');
@@ -124,7 +126,6 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// Obtener un producto
 app.get('/api/products/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM productos WHERE id = $1', [req.params.id]);
@@ -138,7 +139,6 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// Crear producto
 app.post('/api/products', async (req, res) => {
   try {
     const { name, category, quantity, price, cost, minStock, notes } = req.body;
@@ -158,7 +158,6 @@ app.post('/api/products', async (req, res) => {
   }
 });
 
-// Actualizar producto
 app.put('/api/products/:id', async (req, res) => {
   try {
     const { name, category, quantity, price, cost, minStock, notes } = req.body;
@@ -184,15 +183,73 @@ app.put('/api/products/:id', async (req, res) => {
   }
 });
 
-// Eliminar producto
 app.delete('/api/products/:id', async (req, res) => {
+  const client = await pool.connect();
+  
   try {
-    await pool.query('DELETE FROM productos WHERE id = $1', [req.params.id]);
-    console.log('🗑️ Producto eliminado');
-    res.json({ message: 'Producto eliminado exitosamente' });
+    await client.query('BEGIN');
+    
+    // 1. Verificar si el producto existe
+    const productCheck = await client.query(
+      'SELECT * FROM productos WHERE id = $1', 
+      [req.params.id]
+    );
+    
+    if (productCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+    
+    const product = productCheck.rows[0];
+    
+    // 2. Verificar si tiene ventas asociadas
+    const salesCheck = await client.query(
+      'SELECT COUNT(*) as count FROM ventas WHERE product_id = $1',
+      [req.params.id]
+    );
+    
+    if (parseInt(salesCheck.rows[0].count) > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: `No se puede eliminar "${product.name}" porque tiene ${salesCheck.rows[0].count} ventas registradas. Considera desactivarlo en lugar de eliminarlo.`
+      });
+    }
+    
+    // 3. Verificar movimientos de stock
+    const stockCheck = await client.query(
+      'SELECT COUNT(*) as count FROM movimientos_stock WHERE product_id = $1',
+      [req.params.id]
+    );
+    
+    // 4. Eliminar movimientos de stock si existen
+    if (parseInt(stockCheck.rows[0].count) > 0) {
+      await client.query(
+        'DELETE FROM movimientos_stock WHERE product_id = $1',
+        [req.params.id]
+      );
+      console.log(`🗑️ ${stockCheck.rows[0].count} movimientos de stock eliminados`);
+    }
+    
+    // 5. Finalmente eliminar el producto
+    await client.query('DELETE FROM productos WHERE id = $1', [req.params.id]);
+    
+    await client.query('COMMIT');
+    console.log('🗑️ Producto eliminado:', product.name);
+    res.json({ 
+      success: true,
+      message: 'Producto eliminado exitosamente',
+      product: product.name
+    });
+    
   } catch (err) {
-    console.error('Error:', err);
-    res.status(500).json({ error: 'Error al eliminar producto' });
+    await client.query('ROLLBACK');
+    console.error('❌ Error al eliminar producto:', err.message);
+    res.status(500).json({ 
+      error: 'Error al eliminar producto',
+      details: err.message 
+    });
+  } finally {
+    client.release();
   }
 });
 
@@ -200,7 +257,6 @@ app.delete('/api/products/:id', async (req, res) => {
 // RUTAS API - VENTAS
 // ====================================
 
-// Obtener todas las ventas
 app.get('/api/sales', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM ventas ORDER BY sale_date DESC');
@@ -211,7 +267,6 @@ app.get('/api/sales', async (req, res) => {
   }
 });
 
-// Registrar venta
 app.post('/api/sales', async (req, res) => {
   const client = await pool.connect();
   
@@ -220,7 +275,6 @@ app.post('/api/sales', async (req, res) => {
     
     const { productId, quantity, customer, payment, notes } = req.body;
     
-    // Obtener producto
     const productResult = await client.query('SELECT * FROM productos WHERE id = $1', [productId]);
     
     if (productResult.rows.length === 0) {
@@ -230,7 +284,6 @@ app.post('/api/sales', async (req, res) => {
     
     const product = productResult.rows[0];
     
-    // Verificar stock
     if (product.quantity < quantity) {
       await client.query('ROLLBACK');
       return res.status(400).json({ 
@@ -240,11 +293,9 @@ app.post('/api/sales', async (req, res) => {
       });
     }
     
-    // Calcular totales
     const total = product.price * quantity;
     const profit = (product.price - product.cost) * quantity;
     
-    // Registrar venta
     const saleResult = await client.query(
       `INSERT INTO ventas (product_id, product_name, category, quantity, price, cost, total, profit, customer, payment, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -253,7 +304,6 @@ app.post('/api/sales', async (req, res) => {
        total, profit, customer || 'Cliente General', payment || 'Efectivo', notes || '']
     );
     
-    // Actualizar stock
     await client.query(
       'UPDATE productos SET quantity = quantity - $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
       [quantity, productId]
@@ -275,7 +325,6 @@ app.post('/api/sales', async (req, res) => {
 // RUTAS API - STOCK
 // ====================================
 
-// Agregar stock
 app.post('/api/stock/add', async (req, res) => {
   const client = await pool.connect();
   
@@ -284,13 +333,11 @@ app.post('/api/stock/add', async (req, res) => {
     
     const { productId, quantity, supplier, cost, notes } = req.body;
     
-    // Actualizar stock
     await client.query(
       'UPDATE productos SET quantity = quantity + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
       [quantity, productId]
     );
     
-    // Registrar movimiento
     await client.query(
       `INSERT INTO movimientos_stock (product_id, quantity, type, supplier, cost, notes)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -313,7 +360,6 @@ app.post('/api/stock/add', async (req, res) => {
 // RUTAS API - ESTADÍSTICAS
 // ====================================
 
-// Obtener estadísticas
 app.get('/api/stats', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -339,10 +385,11 @@ app.get('/api/stats', async (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({ 
-    message: '🎉 API ONE TOUCH - Sistema IX-RP con PostgreSQL',
+    message: '🎉 API ONE TOUCH - Sistema IX-RP',
     status: 'Online',
     version: '1.0.0',
     database: 'PostgreSQL',
+    environment: process.env.NODE_ENV,
     endpoints: {
       products: '/api/products',
       sales: '/api/sales',
@@ -361,8 +408,8 @@ app.listen(PORT, () => {
   console.log('🚀 Servidor corriendo en http://localhost:' + PORT);
   console.log('📊 API disponible en http://localhost:' + PORT + '/api');
   console.log('🐘 Base de datos: PostgreSQL');
+  console.log(`🌍 Entorno: ${process.env.NODE_ENV}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-  console.log('Esperando peticiones...\n');
 });
 
 // Cerrar conexión al salir
