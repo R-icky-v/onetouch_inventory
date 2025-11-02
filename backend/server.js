@@ -10,18 +10,44 @@ const { Pool } = require('pg');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// ====================================
+// CONFIGURACIÓN DE CORS - ABIERTO
+// ====================================
+app.use(cors({
+  origin: '*',
+  credentials: false,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Headers adicionales ANTES de las rutas
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Log para debugging
+  console.log(`📥 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'No origin'}`);
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
 app.use(express.json());
 
 // ====================================
-// CONFIGURACIÓN DE POSTGRESQL (SEGURA)
+// CONFIGURACIÓN DE POSTGRESQL
 // ====================================
 const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
-  database: process.env.DB_NAME
+  database: process.env.DB_NAME,
+  ssl: process.env.DB_HOST !== 'localhost' ? { rejectUnauthorized: false } : false
 });
 
 console.log('🔧 Configuración de PostgreSQL:');
@@ -34,11 +60,7 @@ console.log('   🔒 Contraseña: [PROTEGIDA]\n');
 pool.connect((err, client, release) => {
   if (err) {
     console.error('❌ Error al conectar a PostgreSQL:', err.message);
-    console.error('\n🔍 VERIFICA:');
-    console.error('   1. PostgreSQL está corriendo');
-    console.error('   2. Las variables de entorno en .env son correctas');
-    console.error('   3. El puerto está disponible\n');
-    process.exit(1);
+    return;
   }
   release();
   console.log('✅ Conectado a PostgreSQL exitosamente\n');
@@ -53,7 +75,6 @@ async function createTables() {
   try {
     console.log('📋 Creando tablas...\n');
 
-    // Tabla Productos
     await client.query(`
       CREATE TABLE IF NOT EXISTS productos (
         id SERIAL PRIMARY KEY,
@@ -70,7 +91,6 @@ async function createTables() {
     `);
     console.log('✅ Tabla productos lista');
 
-    // Tabla Ventas
     await client.query(`
       CREATE TABLE IF NOT EXISTS ventas (
         id SERIAL PRIMARY KEY,
@@ -90,7 +110,6 @@ async function createTables() {
     `);
     console.log('✅ Tabla ventas lista');
 
-    // Tabla Movimientos de Stock
     await client.query(`
       CREATE TABLE IF NOT EXISTS movimientos_stock (
         id SERIAL PRIMARY KEY,
@@ -119,9 +138,10 @@ async function createTables() {
 app.get('/api/products', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM productos ORDER BY created_at DESC');
+    console.log(`✅ Productos obtenidos: ${result.rows.length}`);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al obtener productos' });
   }
 });
@@ -134,7 +154,7 @@ app.get('/api/products/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al obtener producto' });
   }
 });
@@ -153,7 +173,7 @@ app.post('/api/products', async (req, res) => {
     console.log('✅ Producto creado:', name);
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al crear producto' });
   }
 });
@@ -178,7 +198,7 @@ app.put('/api/products/:id', async (req, res) => {
     console.log('✅ Producto actualizado:', name);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al actualizar producto' });
   }
 });
@@ -189,7 +209,6 @@ app.delete('/api/products/:id', async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    // 1. Verificar si el producto existe
     const productCheck = await client.query(
       'SELECT * FROM productos WHERE id = $1', 
       [req.params.id]
@@ -202,7 +221,6 @@ app.delete('/api/products/:id', async (req, res) => {
     
     const product = productCheck.rows[0];
     
-    // 2. Verificar si tiene ventas asociadas
     const salesCheck = await client.query(
       'SELECT COUNT(*) as count FROM ventas WHERE product_id = $1',
       [req.params.id]
@@ -211,26 +229,22 @@ app.delete('/api/products/:id', async (req, res) => {
     if (parseInt(salesCheck.rows[0].count) > 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ 
-        error: `No se puede eliminar "${product.name}" porque tiene ${salesCheck.rows[0].count} ventas registradas. Considera desactivarlo en lugar de eliminarlo.`
+        error: `No se puede eliminar "${product.name}" porque tiene ${salesCheck.rows[0].count} ventas registradas.`
       });
     }
     
-    // 3. Verificar movimientos de stock
     const stockCheck = await client.query(
       'SELECT COUNT(*) as count FROM movimientos_stock WHERE product_id = $1',
       [req.params.id]
     );
     
-    // 4. Eliminar movimientos de stock si existen
     if (parseInt(stockCheck.rows[0].count) > 0) {
       await client.query(
         'DELETE FROM movimientos_stock WHERE product_id = $1',
         [req.params.id]
       );
-      console.log(`🗑️ ${stockCheck.rows[0].count} movimientos de stock eliminados`);
     }
     
-    // 5. Finalmente eliminar el producto
     await client.query('DELETE FROM productos WHERE id = $1', [req.params.id]);
     
     await client.query('COMMIT');
@@ -262,7 +276,7 @@ app.get('/api/sales', async (req, res) => {
     const result = await pool.query('SELECT * FROM ventas ORDER BY sale_date DESC');
     res.json(result.rows);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al obtener ventas' });
   }
 });
@@ -314,7 +328,7 @@ app.post('/api/sales', async (req, res) => {
     res.status(201).json(saleResult.rows[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al registrar venta' });
   } finally {
     client.release();
@@ -349,7 +363,7 @@ app.post('/api/stock/add', async (req, res) => {
     res.json({ message: 'Stock agregado exitosamente' });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al agregar stock' });
   } finally {
     client.release();
@@ -374,7 +388,7 @@ app.get('/api/stats', async (req, res) => {
     `);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error:', err);
+    console.error('❌ Error:', err);
     res.status(500).json({ error: 'Error al obtener estadísticas' });
   }
 });
@@ -389,7 +403,8 @@ app.get('/', (req, res) => {
     status: 'Online',
     version: '1.0.0',
     database: 'PostgreSQL',
-    environment: process.env.NODE_ENV,
+    environment: process.env.NODE_ENV || 'production',
+    cors: 'Configurado - Todos los orígenes permitidos',
     endpoints: {
       products: '/api/products',
       sales: '/api/sales',
@@ -400,15 +415,37 @@ app.get('/', (req, res) => {
 });
 
 // ====================================
+// HEALTH CHECK
+// ====================================
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Manejo de errores 404
+app.use((req, res) => {
+  console.log(`❌ Ruta no encontrada: ${req.method} ${req.path}`);
+  res.status(404).json({ 
+    error: 'Ruta no encontrada',
+    path: req.path,
+    method: req.method
+  });
+});
+
+// ====================================
 // INICIAR SERVIDOR
 // ====================================
 
 app.listen(PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Servidor corriendo en http://localhost:' + PORT);
-  console.log('📊 API disponible en http://localhost:' + PORT + '/api');
+  console.log('🚀 Servidor corriendo en puerto ' + PORT);
+  console.log('📊 API disponible en /api');
   console.log('🐘 Base de datos: PostgreSQL');
-  console.log(`🌍 Entorno: ${process.env.NODE_ENV}`);
+  console.log('🌐 CORS: Abierto (todos los orígenes)');
+  console.log(`🌍 Entorno: ${process.env.NODE_ENV || 'production'}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 });
 
